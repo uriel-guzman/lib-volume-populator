@@ -115,6 +115,7 @@ type controller struct {
 	podConfig              *PodConfig
 	providerFunctionConfig *ProviderFunctionConfig
 	crossNamespace         bool
+	providerMetricManager  *ProviderMetricManager
 }
 
 type VolumePopulatorConfig struct {
@@ -137,6 +138,8 @@ type VolumePopulatorConfig struct {
 	// ProviderFunctionConfig is the configuration for invoking provider functions. Either PodConfig or ProviderFunctionConfig should
 	// be specified. PodConfig and ProviderFunctionConfig can't be provided at the same time
 	ProviderFunctionConfig *ProviderFunctionConfig
+	// ProviderMetricManager is the manager for provider specific metric handling
+	ProviderMetricManager *ProviderMetricManager
 	// CrossNamespace indicates if the populator supports data sources located in namespaces different than the PVC's namespace.
 	// This feature is alpha and requires the populator machinery to process gateway.networking.k8s.io/v1beta1.ReferenceGrant objects
 	CrossNamespace bool
@@ -286,6 +289,7 @@ func RunControllerWithConfig(vpcfg VolumePopulatorConfig) {
 		podConfig:              vpcfg.PodConfig,
 		providerFunctionConfig: vpcfg.ProviderFunctionConfig,
 		crossNamespace:         vpcfg.CrossNamespace,
+		providerMetricManager:  vpcfg.ProviderMetricManager,
 	}
 
 	c.metrics.startListener(vpcfg.HttpEndpoint, vpcfg.MetricsPath)
@@ -443,9 +447,9 @@ func (c *controller) handleMapped(obj interface{}, objType string) {
 	}
 	var key string
 	if len(object.GetNamespace()) == 0 {
-		key = objType + "/" + object.GetName()
+		key = objType + "/" + object.GetName() + "/" + string(object.GetUID())
 	} else {
-		key = objType + "/" + object.GetNamespace() + "/" + object.GetName()
+		key = objType + "/" + object.GetNamespace() + "/" + object.GetName() + "/" + string(object.GetUID())
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -463,7 +467,7 @@ func (c *controller) handlePVC(obj interface{}) {
 		return
 	}
 	if c.populatorNamespace != object.GetNamespace() {
-		c.workqueue.Add("pvc/" + object.GetNamespace() + "/" + object.GetName())
+		c.workqueue.Add("pvc/" + object.GetNamespace() + "/" + object.GetName() + "/" + string(object.GetUID()))
 	}
 }
 
@@ -515,13 +519,18 @@ func (c *controller) runWorker() {
 		}
 		var err error
 		parts := strings.Split(key, "/")
+		var pvcUID string
 		switch parts[0] {
 		case "pvc":
-			if len(parts) != 3 {
+			if len(parts) != 4 {
 				utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
 				return nil
 			}
-			err = c.syncPvc(context.TODO(), key, parts[1], parts[2])
+			pvcNamespace := parts[1]
+			pvcName := parts[2]
+			pvcUID = parts[3]
+			c.providerMetricManager.recordVolumePopulationRequest(pvcUID)
+			err = c.syncPvc(context.TODO(), key, pvcNamespace, pvcName)
 		default:
 			utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
 			return nil
@@ -533,6 +542,7 @@ func (c *controller) runWorker() {
 			if err.Error() == reasonWaitForDataPopulationFinished {
 				return nil
 			}
+			c.providerMetricManager.recordVolumePopulationError("controller.syncPvc", pvcUID, err)
 			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
 		}
 		c.workqueue.Forget(obj)

@@ -169,3 +169,54 @@ func (m *metricsManager) recordMetrics(pvcUID types.UID, result string) {
 	delete(m.cache, pvcUID)
 	m.opInFlight.Set(float64(len(m.cache)))
 }
+
+// ProviderMetric is an empty interface, serving as a placeholder or marker interface.
+// It can be used to group types that represent metrics, even if they don't share any common methods.
+type ProviderMetric interface{}
+
+// VolumePopulationErrorMetric represents a metric specifically for tracking errors during volume population.
+type VolumePopulationErrorMetric struct {
+	PVCUID string
+	Method string
+	Error  error
+}
+
+// VolumePopulationRequestMetric represents a metric for tracking volume population requests.
+type VolumePopulationRequestMetric struct {
+	PVCUID string
+}
+
+// ProviderMetricManager holds the configuration for handling provider specific-metric handling.
+//
+// The `ProviderMetric` parameter is an interface, allowing the provider to use any data type as a metric.
+// It's essential for the provider to implement the necessary type handling within the `HandleMetricFn`
+// to process each metric type appropriately and decide what actions to take with the data.
+//
+// In the provider's implementation, the `HandleMetricFn` function would likely send the metric data
+// to an external system for collection and analysis. This could involve:
+// - Serializing the metric data into a suitable format (e.g., JSON, Protobuf).
+// - Sending the data over a network to a metrics collection service or database.
+// - Potentially handling errors or retries in case of network issues or service unavailability.
+type ProviderMetricManager struct {
+	HandleMetricFn func(ProviderMetric) error
+}
+
+// recordVolumePopulationRequest records a metric indicating that a volume population request has occurred for a given PVC.
+func (pm *ProviderMetricManager) recordVolumePopulationRequest(pvcUID string) {
+	if err := pm.HandleMetricFn(&VolumePopulationRequestMetric{
+		PVCUID: pvcUID,
+	}); err != nil {
+		klog.Errorf("Failed to record volume population request: %+v", err)
+	}
+}
+
+// recordVolumePopulationError records a metric indicating an error during volume population, along with the error context.
+func (pm *ProviderMetricManager) recordVolumePopulationError(method, pvcUID string, err error) {
+	if err := pm.HandleMetricFn(&VolumePopulationErrorMetric{
+		PVCUID: pvcUID,
+		Method: method,
+		Error:  err,
+	}); err != nil {
+		klog.Errorf("Failed to record volume population error: %+v", err)
+	}
+}

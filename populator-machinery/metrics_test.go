@@ -35,6 +35,12 @@ const (
 	httpPattern            = "/metrics"
 	addr                   = "localhost:0"
 	processStartTimeMetric = "process_start_time_seconds"
+	testPVCUID             = "pvc_uid_42"
+	testMethod             = "controller.syncPvc"
+)
+
+var (
+	testError = fmt.Errorf("an internal error has occurred")
 )
 
 func initMgr() *metricsManager {
@@ -334,4 +340,54 @@ func TestProcessStartTimeMetricExist(t *testing.T) {
 	}
 
 	t.Fatalf("Metrics does not contain %v. Scraped content: %v", processStartTimeMetric, metricsFamilies)
+}
+
+// TestProviderMetricManager verifies that the ProviderMetricManager can correctly handle
+// metrics of different types using the `HandleMetricFn` function.
+func TestProviderMetricManager(t *testing.T) {
+	type vpReqLabels struct {
+		pvcUID string
+	}
+
+	type vpErrLabels struct {
+		pvcUID string
+		err    error
+		method string
+	}
+
+	var vpReq *VolumePopulationRequestMetric
+	var vpErr *VolumePopulationErrorMetric
+
+	pm := ProviderMetricManager{
+		HandleMetricFn: func(metric ProviderMetric) error {
+			switch mType := metric.(type) {
+			case *VolumePopulationRequestMetric:
+				vpReq = metric.(*VolumePopulationRequestMetric)
+			case *VolumePopulationErrorMetric:
+				vpErr = metric.(*VolumePopulationErrorMetric)
+			default:
+				return fmt.Errorf("Unknown metric type: %v", mType)
+			}
+			return nil
+		},
+	}
+
+	pm.recordVolumePopulationRequest(testPVCUID)
+	pm.recordVolumePopulationError(testMethod, testPVCUID, testError)
+
+	expVpReq := &VolumePopulationRequestMetric{
+		PVCUID: testPVCUID,
+	}
+	expVpErr := &VolumePopulationErrorMetric{
+		PVCUID: testPVCUID,
+		Error:  testError,
+		Method: testMethod,
+	}
+
+	if !reflect.DeepEqual(vpReq, expVpReq) {
+		t.Errorf("Test failed. Expected %+v, got: %+v for VolumePopulationRequestMetric", expVpReq, vpReq)
+	}
+	if !reflect.DeepEqual(vpErr, expVpErr) {
+		t.Errorf("Test failed. Expected %+v, got: %+v for VolumePopulationErrorMetric", expVpErr, vpErr)
+	}
 }
